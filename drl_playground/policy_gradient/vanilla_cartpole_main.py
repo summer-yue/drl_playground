@@ -3,12 +3,12 @@ import numpy as np
 import tensorflow as tf
 
 # TODO: Use a logger.
-debug_mode = False
+debug_mode = True
 # Set up the gym environment and global variables related to the environment.
 env = gym.make('CartPole-v0')
 observation_dim = env.observation_space.shape[0]  # 4
 actions_dim = env.action_space.n  # 2
-default_max_steps = 100
+default_max_steps = 20
 
 
 def build_policy_net():
@@ -38,11 +38,11 @@ def compute_average_return(model, n_episodes, max_steps=default_max_steps,
         model(tf.keras.Model): the model to be evaluated.
         n_episodes(int): the number of episodes to run, defaults to 20.
         max_steps(int): the max number of steps before terminating an episode.
-        render(bool): whether we render the cartpole environments while
+        render(bool): whether we render the CartPole environments while
             running these simulations.
 
     Returns:
-        avg_return(float): the avergage cumulative reward for the n episodes.
+        avg_return(float): the average cumulative reward for the n episodes.
 
     """
     sum_episodes_returns = 0
@@ -63,8 +63,9 @@ def compute_average_return(model, n_episodes, max_steps=default_max_steps,
                 print("actions: {}".format(action))
             observation, reward, done, _ = env.step(action)
             episode_return += reward
-            if done and debug_mode:
-                print("Episode finished after {} time steps".format(t + 1))
+            if done:
+                if debug_mode:
+                    print("Episode finished after {} time steps".format(t + 1))
                 break
 
         sum_episodes_returns += episode_return
@@ -76,8 +77,7 @@ def compute_average_return(model, n_episodes, max_steps=default_max_steps,
 
     return avg_return
 
-
-# TODO: make this a tf.function to save computes.
+@tf.function
 def get_loss(reward_weights, action_logits, in_progress):
     """Get the loss tensor (None, ) where None represents the batch size.
 
@@ -94,6 +94,8 @@ def get_loss(reward_weights, action_logits, in_progress):
         in_progress(Tensor): shape (None, None, ), dtype float32, a 0/1 value
             indicating whether the episode was in progress at an action.
     Returns:
+        A loss tensor with shape (None, ), dtype float 32 - (batch_size, ). The
+            gradient of the defined loss is equivalent to the policy gradient.
 
     """
     # actions_one_hot shape: (batch_size, action_steps, )
@@ -156,38 +158,48 @@ def train(model, batch_size, max_steps=default_max_steps):
             time = 0
             eps_action_logits = []
             eps_in_progress = []
+            done = False
             while time < max_steps:
-                # TODO: do not call step again when done.
-                # action_logit shape: (2,).
-                action_logit = model(np.expand_dims(obs, axis=0))[0]
-                if debug_mode:
-                    print("obs {} with shape {}".format(obs, obs.shape))
-                    print("train, action_logit: {}".format(action_logit))
-                eps_action_logits.append(action_logit)
+                if done:
+                    eps_action_logits.append(tf.constant(
+                        0, dtype=tf.float32, shape=(actions_dim, )))
+                    eps_observations = np.concatenate((eps_observations,
+                        [tf.constant(0, dtype=tf.float32, shape=(observation_dim, ))]),
+                                                      axis=0)
+                else:
+                    # action_logit shape: (2,).
+                    action_logit = model(np.expand_dims(obs, axis=0))[0]
+                    if debug_mode:
+                        print("obs {} with shape {}".format(obs, obs.shape))
+                        print("train, action_logit: {}".format(action_logit))
+                    eps_action_logits.append(action_logit)
 
-                # TODO: Sample from the logits instead of taking the greedy action.
-                # action is an int scalar.
-                action = np.argmax(action_logit)
-                obs, reward, done, _ = env.step(action)
-                time += 1
-                eps_rewards += reward
-                eps_observations = np.concatenate((eps_observations, [obs]),
-                                                  axis=0)
+                    # TODO: Sample from the logits instead of select greedily.
+                    # action is an int scalar.
+                    action = np.argmax(action_logit)
+                    obs, reward, done, _ = env.step(action)
+                    eps_rewards += reward
+                    eps_observations = np.concatenate((eps_observations, [obs]),
+                                                      axis=0)
+
                 eps_in_progress.append(
                     tf.constant(int(not done), dtype=tf.float32))
+                time += 1
 
             all_action_logits.append(eps_action_logits)
             all_rewards.append(eps_rewards)
             all_in_progress.append(eps_in_progress)
 
-        packed_all_action_logits = tf.stack(all_action_logits, axis=0)
-        packed_all_action_logits = tf.stack(packed_all_action_logits, axis=0)
+        packed_all_action_logits = tf.stack(all_action_logits)
+        packed_all_action_logits = tf.stack(packed_all_action_logits)
         if debug_mode:
             print("train, all_action_logits: {}".format(all_action_logits))
             print(
                 "train, packed_all_action_logits: {}".format(
                     packed_all_action_logits))
-        loss = get_loss(all_rewards, packed_all_action_logits, all_in_progress)
+        loss = get_loss(tf.stack(all_rewards),
+                        tf.stack(packed_all_action_logits),
+                        tf.stack(all_in_progress))
 
     gradient = tape.gradient(loss, model.trainable_weights)
     opt = tf.keras.optimizers.Adam(learning_rate=0.01)
@@ -205,15 +217,21 @@ policy_net = build_policy_net()
 random_model_reward = compute_average_return(policy_net, 10)
 print("The average reward among all episodes for a randomly initialized "
       "model is {}".format(random_model_reward))
+weights_before_training = policy_net.trainable_weights
+if debug_mode:
+    print("Model weights before training {}".format(weights_before_training))
 
-num_batch = 100
+num_batch = 10
 # TODO: convert this to a progress bar.
 for i in range(num_batch):
     if i%10 == 0:
         print("Finished {}th gradient update out of {}".format(i, num_batch))
-    train(policy_net, batch_size=8)
+    train(policy_net, batch_size=128)
 trained_model_reward = compute_average_return(policy_net, 100)
 print("The average reward among all episodes for a trained model is {}.".format(
     trained_model_reward))
+weights_after_training = policy_net.trainable_weights
 
+if debug_mode:
+    print("Model weights after training {}".format(weights_after_training))
 env.close()
