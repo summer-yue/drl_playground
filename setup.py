@@ -8,5 +8,5 @@ setup(name='drl_playground',
       author_email='yutingyue514@gmail.com',
       license='MIT',
       packages=['drl_playground'],
-      install_requires=['gym', 'tensorflow'],
+      install_requires=['absl-py', 'gym', 'tensorflow', 'tqdm'],
       zip_safe=False)

@@ -34,7 +34,8 @@ class BanditEnv(gym.Env):
 
         # self.observation is meaningless as the reward never depends on the
         # current observation.
-        self.observation = np.zeros((4,))
+        # TODO: change this back to 0.
+        self.observation = np.zeros((4,)) + 1
         super().__init__()
 
     def step(self, action):
